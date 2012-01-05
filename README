@@ -1,0 +1,12 @@
+Shared Cookies on different subdomains
+======================================
+To allow fluxbb_post module to read fluxbb cookies you need to set fluxbb
+config file to have:
+
+ $cookie_domain = '.youdomain.com';
+
+and
+ 
+ $cookie_path = '/';
+
+Clear cache and cookie from your browser, restart it and all should work.

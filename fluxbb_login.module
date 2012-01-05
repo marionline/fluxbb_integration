@@ -1,0 +1,317 @@
+<?php
+
+/**
+ * @file
+ * Authenticate users using fluxbb system and database.
+ */
+
+require_once('fluxbb_integration_api.php');
+
+/**
+ * Implements hook_help.
+ *
+ * Displays help and module information.
+ *
+ * @param path
+ *   Which path of the site we're using to display help
+ * @param arg
+ *   Array that holds the fluxbb path as returned from arg() function
+ */
+function fluxbb_login_help($path, $arg) {
+  switch ($path) {
+  case "admin/help#fluxbb_login":
+    return '<p>'.  t("Displays links to nodes on fluxbb login module") .'</p>';
+    break;
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function fluxbb_login_block_info() {
+  $blocks['fluxbb_login'] = array(
+    'info' => t('Fluxbb login'), //The name that will appear in the block list.
+    'cache' => DRUPAL_CACHE_PER_ROLE, //Default
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function fluxbb_login_menu() {
+  $items = array(); 
+
+  $items['admin/config/people/fluxbb_login'] = array(
+    'title' => 'Configure Fluxbb login',
+    'description' => 'Configuration for Fluxbb Login module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('fluxbb_login_form'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+} 
+
+/**
+ * Form function, called by drupal_get_form()
+ * in fluxbb_login_menu().
+ */
+function fluxbb_login_form($form, &$form_state) {
+  $form['fluxbb_integration_root_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Server path of your fluxbb forum code'),
+    '#default_value' => variable_get('fluxbb_integration_root_path', 'forum/'),
+    '#description' => t('Set this to allow module Fluxbb_login and Fluxbb_posts to interact with fluxbb files'),
+    '#required' => TRUE,
+  );
+  $form['fluxbb_integration_url_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('URL Path to your fluxbb forum site'),
+    '#default_value' => variable_get('fluxbb_integration_url_path', 'http://www.example.com/forum'),
+    '#description' => t('Set this to create correct link to your forum'),
+    '#required' => TRUE,
+  );
+  $form['fluxbb_user_remember'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('View or not fluxbb remember checkbox.'),
+    '#default_value' => variable_get('fluxbb_user_remember', true),
+    '#description' => t('Set this to display checkbox if need to remember login.'),
+  );
+  $form['fluxbb_user_register'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('View or not fluxbb register link.'),
+    '#default_value' => variable_get('fluxbb_user_register', true),
+    '#description' => t('Set this to display link to fluxbb register page.'),
+  );
+  $form['fluxbb_user_lost_password'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('View or not fluxbb lost password link.'),
+    '#default_value' => variable_get('fluxbb_user_lost_password', true),
+    '#description' => t('Set this to display link to fluxbb request new password page.'),
+  );
+
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implements validation from the Form API.
+ *
+ * @param $form
+ *   A structured array containing the elements and properties of the form.
+ * @param $form_state
+ *   An array that stores information about the form's fluxbb state
+ *   during processing.
+ */
+function fluxbb_login_form_validate($form, &$form_state){
+  $form_state['values']['fluxbb_integration_root_path'] = trim($form_state['values']['fluxbb_integration_root_path']);
+  if(substr($form_state['values']['fluxbb_integration_root_path'],-1) != '/')
+    $form_state['values']['fluxbb_integration_root_path'] = $form_state['values']['fluxbb_integration_root_path'] . '/';
+  if (!is_dir($form_state['values']['fluxbb_integration_root_path'])){
+    form_set_error('fluxbb_integration_root_path', t('The Path is not correct.'));
+  }
+
+  if (link_validate_url(trim($form_state['values']['fluxbb_integration_url_path'])) == FALSE) {
+    form_set_error('fluxbb_integration_url_path', t('The URL Path is not correct.'));
+  } 
+}
+
+
+/**
+ * Implement hook_form_alter() to change the behaviour of the login form.
+ *
+ * Login validators are set in the user_login_default_validators() function in user.module.
+ * They are normally set to array('user_login_name_validate',
+ * 'user_login_authenticate_validate', 'user_login_final_validate').
+ * We simply replace 'user_login_authenticate_validate' with 'fluxbb_login_login_validate'.
+ */
+function fluxbb_login_form_user_login_alter( &$form, $form_state )
+{
+  unset($form['links']);
+
+  $items = array();
+  if (variable_get('fluxbb_user_register', TRUE)) {
+    $items[] = l(t('Create new account'), get_forum_url() . '/register.php', array('attributes' => array('title' => t('Create a new user account.'))));
+  }
+  if (variable_get('fluxbb_user_lost_password', TRUE)) {
+    $items[] = l(t('Request new password'), get_forum_url() . '/login.php?action=forget', array('attributes' => array('title' => t('Request new password via e-mail.'))));
+  }
+
+  if (variable_get('fluxbb_user_remember', TRUE)) {
+    $form['remember'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Remember me'),
+      '#default_value' => false,
+    );
+  }
+
+  $form['links'] = array('#markup' => theme('item_list', array('items' => $items)));
+
+  $form['#validate'] = array( 'user_login_name_validate', 'fluxbb_login_login_validate', 'user_login_final_validate' );
+}
+
+function fluxbb_login_form_user_login_block_alter( &$form, $form_state )
+{
+  return fluxbb_login_form_user_login_alter( $form, $form_state );
+}
+
+/**
+ * Implement hook_user_profile_form_alter() to disable the ability to change email address and
+ * password for externally authenticated users.
+ */
+function fluxbb_login_form_user_profile_form_alter( &$form, $form_state )
+{
+  global $user;
+
+  if (!in_array('administrator', $user->roles)) {
+    $fluxbb = get_fluxbb_object();
+    drupal_goto(get_forum_url() . '/profile.php?id=' . $fluxbb->getUserId($user->name), array(), 303);
+  }
+}
+
+/**
+ * The fluxbb_login_login_validate() function attempts to authenticate a user off the external system
+ */
+function fluxbb_login_login_validate( $form, &$form_state )
+{
+  global $user;
+
+  $username = $form_state['values']['name'];
+
+  if(db_query("SELECT COUNT(*) FROM {users} WHERE name = :name", array(':name' => $username))->fetchField() && !user_external_load($username)) {
+    // Perform normal login in drupal
+    user_login_authenticate_validate( $form, $form_state );
+    // Perform login in fluxbb too
+    validateFluxbbUser( $username, $form_state['values']['pass']);
+  } else {
+    // Perform external authentication and login in fluxbb
+    if ( validateFluxbbUser( $username, $form_state['values']['pass'], $form_state['values']['remember'] )) {
+      user_external_login_register( $username, 'fluxbb_login' );
+      $form_state['uid'] = $user->uid;
+    }
+  }
+}
+
+/**
+ * This is the helper function that you will need to modify in order to invoke your external
+ * authentication mechanism.
+ */
+function validateFluxbbUser( $username, $password, $remember = false )
+{
+  $fluxbb = get_fluxbb_object();
+  if($fluxbb) {
+    return $fluxbb->login($username, $password, $remember);
+  } else {
+    return false;
+  }
+}
+
+/**
+ * fluxbb_login_user_logout 
+ * Implement hook_user_logout
+ * Logout in fluxbb too
+ * 
+ * @param mixed $account 
+ * @access public
+ * @return void
+ */
+function fluxbb_login_user_logout( $account ) {
+  $fluxbb = get_fluxbb_object();
+  if($fluxbb){
+    $fluxbb->logout();
+  }
+}
+
+function fluxbb_login_comment_view_alter(&$build) {
+  $style = variable_get('user_picture_style', '');
+  $username = $build['comment_body']['#object']->name;
+  $alt = t("@user's picture", array('@user' => $username));
+
+  $fluxbb = get_fluxbb_object();
+  $filepath = $fluxbb->get_user_avatar_url($fluxbb->getUserId($username));
+
+  if($filepath !== null) {
+    $filepath = get_forum_url() . '/' . $filepath;
+    $picture = theme('image', array('path' => $filepath, 'alt' => $alt, 'title' => $alt));
+    $build['user_picture']['#markup'] = '<div class="user-picture">' . $picture . '</div>';
+  }
+}
+
+/**
+ * fluxbb_login_boot 
+ * Implement hook_boot
+ * 
+ * @access public
+ * @return void
+ */
+function fluxbb_login_boot() {
+  global $user;
+
+  // get user module and include some handy functions
+  drupal_bootstrap(DRUPAL_BOOTSTRAP_FULL);
+
+  if($_GET['q']) {
+    switch($_GET['q']){
+    case 'user/register':
+      unset($_GET['destination']);
+      drupal_goto(get_forum_url() . '/register.php', array(), 303);
+      break;
+    case 'user/password':
+      drupal_goto(get_forum_url() . '/login.php?action=forget', array(), 303);
+      break;
+    }
+  }
+
+  $fluxbb = get_fluxbb_object();
+
+  if($fluxbb){
+    $pun_user = array();
+    if($fluxbb->check_cookie($pun_user)){
+      if ($user->uid != 0) {
+        if($user->mail != $pun_user['email'] OR $user->signature != $pun_user['signature']) {
+          user_save($user, array('mail' => $pun_user['email'], 'signature' => $pun_user['signature']));
+        }
+        return;
+      }
+
+      // get account (reload from db) , bail if no loaded active user
+      $account = user_load_by_name($pun_user['username'], TRUE);
+
+      // If user never logged in drupal perform a registration
+      if($account == false){
+        user_external_login_register( $pun_user['username'], 'fluxbb_login' );
+      }
+
+      if (!$account || $account->status <> 1 ) return;
+
+      // login by assigning account to global $user object
+      $user = $account;
+
+      // following borrowed from user_authenticate_finalize(), but with slightly different message
+      watchdog('user', 'Session opened for %name by Fluxbb login module.', array('%name' => $user->name));
+
+      // This is also used to invalidate one-time login links.
+      $user->login = time();
+      db_update('users')
+        ->fields(array('login' => $user->login))
+        ->condition('uid', $user->uid)
+        ->execute();
+
+      // Regenerate the session ID to prevent against session fixation attacks.
+      // This is called before hook_user in case one of those functions fails
+      // or incorrectly does a redirect which would leave the old session in place.
+      $edit = NULL;
+      drupal_session_regenerate();
+      user_module_invoke('login', $edit, $user);
+    } else {
+      if($user->uid <> 0) {
+        watchdog('user', 'Session closed for %name by Fluxbb login module.', array('%name' => $user->name));
+        module_invoke_all('user_logout', $user);
+        // Destroy the current session, and reset $user to the anonymous user.
+        session_destroy();
+      }
+    }
+  }
+}

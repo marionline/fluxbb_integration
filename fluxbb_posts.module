@@ -1,0 +1,267 @@
+<?php
+
+/**
+ * @file
+ * Take posts from fluxbb database.
+ */
+
+require_once('fluxbb_integration_api.php');
+
+/**
+* Implements hook_help.
+*
+* Displays help and module information.
+*
+* @param path
+*   Which path of the site we're using to display help
+* @param arg
+*   Array that holds the fluxbb path as returned from arg() function
+*/
+function fluxbb_posts_help($path, $arg) {
+  switch ($path) {
+    case "admin/help#fluxbb_posts":
+      return '<p>'.  t("Displays links to nodes on fluxbb posts module") .'</p>';
+      break;
+  }
+}
+
+/**
+* Implements hook_block_info().
+*/
+function fluxbb_posts_block_info() {
+  $blocks['fluxbb_posts'] = array(
+    'info' => t('Fluxbb posts'), //The name that will appear in the block list.
+    'cache' => DRUPAL_CACHE_PER_ROLE, //Default
+  );
+  return $blocks;
+}
+
+/**
+* Fluxbb posts content function.
+*
+* Set beginning and end dates, retrieve posts from database
+* saved in that time period.
+*
+* @return
+*   A result set of the targeted posts.
+*/
+function fluxbb_posts_last_thread($display = ''){
+  $pun_root = variable_get('fluxbb_integration_root_path', '/forum');
+  $config_file = $pun_root . "config.php";
+  if(file_exists($config_file)) {
+    require($config_file);
+    if($db_type == 'mysqli')
+      $driver = 'mysql';
+    else
+      $driver = $db_type;
+    $fluxbb_database = array(
+        'database' => $db_name,
+        'username' => $db_username,
+        'password' => $db_password,
+        'host' => $db_host,
+        'driver' => $driver,
+    );
+  } else {
+	  return;
+  }
+  Database::addConnectionInfo('fluxbb', 'default', $fluxbb_database);
+
+  //Select fluxbb database
+  db_set_active( $DBfluxbb = 'fluxbb' );
+
+  switch($display){
+  case 'block' : 
+    $range = variable_get('fluxbb_posts_max', 10);
+    break;
+  }
+
+  $prefix = $db_prefix;
+
+  //Use Database API to retrieve fluxbb posts.
+  $query = db_select($prefix . 'topics', 'topics');
+  $query->join($prefix . 'forums', 'forums', 'forums.id = topics.forum_id');
+  $query->join($prefix . 'users', 'users', 'users.username = topics.last_poster');
+  $query->fields('topics', array('id', 'poster', 'subject', 'posted', 'first_post_id', 'last_post', 'last_post_id', 'last_poster', 'num_views', 'num_replies', 'forum_id'))
+    ->fields('forums', array('forum_name'));
+  $query->addField('users', 'id', 'poster_id');
+  $query->orderBy('topics.last_post', 'DESC') //Most recent first.
+    ->range(0, $range);
+
+  $q = db_query('SELECT DISTINCT forum_id FROM ' . $prefix . 'forum_perms');
+  $exclude = $q->fetchCol();
+
+  include_once('fluxbb-api.php');
+  $fluxbb = new fluxbb($pun_root, array($cookie_name, $cookie_domain, $cookie_path, $cookie_secure, $cookie_seed), array($db_type, $db_host, $db_name, $db_username, $db_password, $db_prefix, $p_connect));
+  $pun_user = array();
+  if(count($exclude) > 0) {
+    if(!$fluxbb->check_cookie($pun_user) OR (isset($pun_user['is_admmod']) && $pun_user['is_admmod'] != 1)){
+      $query->condition('forums.id', $exclude, 'NOT IN');
+    }
+  }
+
+  $results = $query->execute();
+
+  //Return to default database
+  db_set_active();
+
+  return $results; 
+}
+
+/**
+* Implements hook_block_view().
+*
+* Prepares the contents of the block.
+*/
+function fluxbb_posts_block_view($delta = '') {
+  switch($delta){
+    case 'fluxbb_posts':
+      $block['subject'] = t('Forum posts');
+      if(user_access('access content')){
+        //Use our custom function to retrieve data.
+        $result = fluxbb_posts_last_thread('block');
+        //Array to contain items for the block to render.
+        $items = array();
+        //Iterate over the resultset and format as links.
+        foreach ($result as $node){
+          $items[] = array(
+            'data' => array(
+              l($node->forum_name, get_forum_url() . '/viewforum.php?id=' . $node->forum_id),
+              l($node->subject, get_forum_url() . '/viewtopic.php?pid=' . $node->last_post_id . '#p' . $node->last_post_id),
+              $node->num_replies,
+              $node->num_views,
+              format_date($node->last_post, 'custom', 'd/m/Y H:i'),
+              l($node->last_poster, get_forum_url() . '/profile.php?id=' . $node->poster_id),
+            ),
+          );
+        }
+     
+        if (empty($items)) { //No content in the last week.
+          $block['content'] = t('No posts available.'); 
+        }
+        else {
+          //Pass data through theme function.
+          $block['content']['posts'] = array(
+            '#theme' => 'table__fluxbb_posts__block',
+            '#header' => array(
+              t('Forum'),
+              t('Topic'),
+              t('Replies'),
+              t('Views'),
+              t('Date'),
+              t('User'),
+            ),
+            '#rows' => $items,
+          );
+          //Add a link to fluxbb recent posts page.
+          $block['content']['more'] = array(
+            '#theme' => 'more_link__fluxbb_posts',
+            '#url' => get_forum_url() . '/search.php?action=show_recent',
+            '#title' => t('See the full list of current posts.'),
+          );
+        }
+      }
+  }
+  return $block;
+}
+
+/**
+* Implements hook_menu().
+*/
+function fluxbb_posts_menu() {
+  $items = array(); 
+
+  $items['admin/config/content/fluxbb_posts'] = array(
+    'title' => 'Configure Fluxbb posts',
+    'description' => 'Configuration for Fluxbb posts module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('fluxbb_posts_form'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+} 
+
+/**
+* Form function, called by drupal_get_form()
+* in fluxbb_posts_menu().
+*/
+function fluxbb_posts_form($form, &$form_state) {
+  $form['fluxbb_posts_max'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Maximum number of posts'),
+    '#default_value' => variable_get('fluxbb_posts_max', 10),
+    '#size' => 2,
+    '#maxlength' => 2,
+    '#description' => t('The maximum number of links to display in the block.'),
+    '#required' => TRUE,
+  );
+
+  $form['fluxbb_integration_url_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('URL Path to your fluxbb forum site'),
+    '#default_value' => variable_get('fluxbb_integration_url_path', 'http://www.example.com/forum'),
+    '#description' => t('Set this to create correct link to your forum'),
+    '#required' => TRUE,
+  );
+
+  $form['fluxbb_integration_root_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Server path of your fluxbb forum code'),
+    '#default_value' => variable_get('fluxbb_integration_root_path', 'forum/'),
+	'#description' => t('Set this to allow module Fluxbb_login and Fluxbb_posts to interact with fluxbb files'),
+    '#required' => TRUE,
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+* Implements validation from the Form API.
+*
+* @param $form
+*   A structured array containing the elements and properties of the form.
+* @param $form_state
+*   An array that stores information about the form's fluxbb state
+*   during processing.
+*/
+function fluxbb_posts_form_validate($form, &$form_state){
+  function check($max_num, $type) {
+    if (!is_numeric($max_num)){
+      form_set_error($type, t('You must enter an integer for the maximum number of posts to display.'));
+    }
+    else if ($max_num <= 0){
+      form_set_error($type, t('Maximum number of posts to display must be positive.'));      
+    }
+  }
+  check($form_state['values']['fluxbb_posts_max'], 'fluxbb_posts_max');
+
+  if (link_validate_url(trim($form_state['values']['fluxbb_integration_url_path'])) == FALSE) {
+    form_set_error('fluxbb_integration_url_path', t('The URL Path is not correct.'));
+  } 
+
+  $form_state['values']['fluxbb_integration_root_path'] = trim($form_state['values']['fluxbb_integration_root_path']);
+  if(substr($form_state['values']['fluxbb_integration_root_path'],-1) != '/')
+    $form_state['values']['fluxbb_integration_root_path'] = $form_state['values']['fluxbb_integration_root_path'] . '/';
+  if (!is_dir($form_state['values']['fluxbb_integration_root_path'])){
+    form_set_error('fluxbb_integration_root_path', t('The Path is not correct.'));
+  }
+}
+
+/**
+* Implements hook_permission().
+*/
+function fluxbb_posts_permission(){
+  return array(
+    'access fluxbb_posts content' => array(
+      'title' => t('Access content for the Fluxbb posts module'),
+    ) 
+  ); 
+}
+
+/**
+ * Implement hook_enable()
+ */
+function yourmodulename_enable() {
+	drupal_set_message($message = t('The Fluxbb posts  module was successfully enabled you need to configure it to prevent errors.'), $type = 'status');
+}

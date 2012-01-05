@@ -1,0 +1,6 @@
+name = Fluxbb Login
+description = Authenticate user in drupal using fluxbb authentication
+core = 7.x
+configure = admin/config/people/fluxbb_login
+files[] = fluxbb_login.module
+files[] = fluxbb_login.info

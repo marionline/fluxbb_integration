@@ -1,0 +1,7 @@
+name = Fluxbb Posts
+description = Take latest posts from fluxbb database.
+core = 7.x
+package = Views
+configure = admin/config/content/fluxbb_posts
+files[] = fluxbb_posts.module
+files[] = fluxbb_posts.info
