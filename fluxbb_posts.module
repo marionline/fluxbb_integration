@@ -257,7 +257,7 @@ function fluxbb_posts_form_validate($form, &$form_state){
   }
   check($form_state['values']['fluxbb_posts_max'], 'fluxbb_posts_max');
 
-  if (link_validate_url(trim($form_state['values']['fluxbb_integration_url_path'])) == FALSE) {
+  if (valid_url(trim($form_state['values']['fluxbb_integration_url_path']), TRUE) == FALSE) {
     form_set_error('fluxbb_integration_url_path', t('The URL Path is not correct.'));
   } 
 
